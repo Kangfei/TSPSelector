@@ -214,6 +214,7 @@ def batch_train(args, model, train_dataloader, val_dataloader, optimizer, schedu
             loss = torch.nn.functional.nll_loss(outputs, data.y) / args.batch_size
             loss.backward()
 
+
             if (i + 1) % args.batch_size == 0:
                 optimizer.step()
                 optimizer.zero_grad()
