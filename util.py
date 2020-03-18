@@ -1,8 +1,10 @@
 import os
 import pickle
 import tsplib95
+import csv
 import numpy as np
 from math import pi, sin, cos
+import statistics as stat
 import scipy.sparse as sp
 from sklearn.decomposition import PCA
 from scipy import sparse
@@ -12,14 +14,26 @@ import matplotlib.pyplot as plt
 from torch_geometric.utils.convert import from_scipy_sparse_matrix
 from scipy.spatial.distance import euclidean
 pathes = [
+            # our instances
+            '/home/kfzhao/data/our_instances/cl',
+            '/home/kfzhao/data/our_instances/cluster',
+            '/home/kfzhao/data/our_instances/compression',
+            '/home/kfzhao/data/our_instances/expansion',
+            '/home/kfzhao/data/our_instances/explosion',
+            '/home/kfzhao/data/our_instances/grid',
+            '/home/kfzhao/data/our_instances/implosion',
+            '/home/kfzhao/data/our_instances/linearprojection',
+            '/home/kfzhao/data/our_instances/rotation',
+            '/home/kfzhao/data/our_instances/RUE',
+        # ECJ instances
         #   '/home/kfzhao/data/ECJ_instances/national'
         #  ,'/home/kfzhao/data/ECJ_instances/rue'
-          '/home/kfzhao/data/ECJ_instances/tsplib'
+        #  '/home/kfzhao/data/ECJ_instances/tsplib'
         # , '/home/kfzhao/data/ECJ_instances/vlsi'
         ]
 
 filename = '/home/kfzhao/data/ECJ_instances/tsplib/att532.tsp'
-def load_tsp_instance(filename):
+def load_tsp_instance(filename, norm = False):
     problem = tsplib95.load_problem(filename)
     N = problem.dimension
 
@@ -42,7 +56,9 @@ def load_tsp_instance(filename):
 
     for i in range(N):
         x[i][0], x[i][1] = problem.node_coords[i + 1][0], problem.node_coords[i + 1][1]
-    x = coordinate_normalize(x)
+    if norm:
+        x = coordinate_normalize(x)
+    """
     for i in range(N):
         for j in range(i + 1, N):
             #mat[i, j] = mat[j, i] = problem.wfunc(i + 1, j + 1)
@@ -51,10 +67,16 @@ def load_tsp_instance(filename):
     A = sp.csr_matrix(mat)
     edge_index, edge_attr = from_scipy_sparse_matrix(A)
     edge_index, edge_attr = edge_index.numpy(), edge_attr.numpy()
-
+    
     instance = {'x': x, 'edge_index': edge_index, 'edge_attr': edge_attr,  'adj': A.todense()}
     with open(os.path.splitext(filename)[0] + '_norm.pickle', 'wb') as out_file:
         pickle.dump(obj = instance, file = out_file, protocol= 3)
+        print(filename + " saved.")
+        out_file.close()
+    """
+    instance = {'x': x}
+    with open(os.path.splitext(filename)[0] + '.coo.pickle', 'wb') as out_file:
+        pickle.dump(obj=instance, file=out_file, protocol=3)
         print(filename + " saved.")
         out_file.close()
 
@@ -206,7 +228,7 @@ def test():
             if os.path.splitext(os.path.join(path, file))[1] == '.tsp':
                 load_tsp_instance(os.path.join(path, file))
                 instances_num = instances_num + 1
-
+    print("# total generated instances: {}".format(instances_num))
     return instances_num
 
 
@@ -270,7 +292,7 @@ def process_one_instance(data):
     algorithm_to_result = {}
     for i in range(50):
         ins_id, repeat, algorithm, runtime, runstatus = \
-        data[i][0], data[i][1], data[i][2], data[i][3], data[4]
+        data[i][0], data[i][1], data[i][2], data[i][3], data[i][4]
         if ins_id != instance_id:
             return None, None, None
         if algorithm not in algorithm_to_result.keys():
@@ -327,6 +349,91 @@ def load_labels(filename = '/home/kfzhao/data/ECJ_instances/algorithm_runs.arff.
     print("average best run time={}".format(best_run_time / num_instances))
     return labels
 
+def process_one_our_instance(data, time_out = 900.0, num_runs = 30):
+    instance_id = data[0][0]
+    """
+    if dataset == 'rue':
+        return None, None, None
+    """
+    best_runtime = time_out
+    best_algorithm = 'all'
+    algorithm_to_result = {}
+    for i in range(num_runs):
+        ins_id, algorithm, repeat, runstatus, runtime = \
+        data[i][0], data[i][1], data[i][2], data[i][3], float(data[i][4])
+        if ins_id != instance_id:
+            return None, None, None
+        if algorithm not in algorithm_to_result.keys():
+            algorithm_to_result[algorithm] = list([runtime])
+        else:
+            algorithm_to_result[algorithm].append(runtime)
+
+    algorithm_to_median = {} # algorithm-> median runtime
+    for key, value in algorithm_to_result.items():
+        median = stat.median(value)
+        algorithm_to_median[key] = median
+        if median < time_out:
+            if median < best_runtime:
+                best_runtime = median # median of the test performance
+                best_algorithm = key
+        else:
+            algorithm_to_median[key] = time_out * 10
+    return instance_id, best_algorithm, algorithm_to_median
+
+def our_label_stat(filename = '/home/kfzhao/data/our_instances/algorithm_runs.csv', time_out = 900.0, num_runs = 30):
+    data = []
+    labels = {}
+    with open(filename, 'r') as label_file:
+        csvreader = csv.reader(label_file)
+        next(csvreader)
+
+        for line in csvreader:
+            data.append(line)
+    label_file.close()
+    num_instances = 0
+    best_algo_cnt = {} # algo-> best instance count
+    timeout_algo_cnt = {} # algo-> timeout instance count
+    single_run_time = {} # algo-> average run time
+    num_timeout = 0
+    best_run_time = 0
+    for i in range(3000):
+        instance_id, best_algorithm, algorithm_to_median = \
+            process_one_our_instance(data[i * num_runs: i * num_runs + num_runs], time_out, num_runs)
+        if instance_id is None:
+            print("failed")
+            continue
+        num_instances += 1
+        if best_algorithm not in best_algo_cnt.keys():
+            best_algo_cnt[best_algorithm] = 0
+        best_algo_cnt[best_algorithm] += 1
+        best_run_time += algorithm_to_median[best_algorithm]
+        if algorithm_to_median[best_algorithm] >= time_out:
+            num_timeout += 1
+
+        for algorithm, runtime in algorithm_to_median.items():
+            if algorithm not in single_run_time.keys():
+                single_run_time[algorithm] = 0.0
+            single_run_time[algorithm] += runtime
+            if algorithm not in timeout_algo_cnt.keys():
+                timeout_algo_cnt[algorithm] = 0
+            if runtime >= time_out:
+                timeout_algo_cnt[algorithm] += 1
+        # save the label
+        instance_id = os.path.splitext(instance_id)[0] # remove the extent '.tsp'
+        labels[instance_id] = (best_algorithm, algorithm_to_median)
+    for algorithm, cnt in best_algo_cnt.items():
+        print("{} best instance number : {}".format(algorithm, cnt))
+
+    for algorithm, cnt in timeout_algo_cnt.items():
+        print("{} timeout instance number : {}".format(algorithm, cnt))
+
+    print("average best run time={}".format(best_run_time / num_instances))
+    for algorithm, runtime in single_run_time.items():
+        print("{} average runtime : {}".format(algorithm, runtime / num_instances))
+    print("# virtual best solver timeout {}".format(num_timeout))
+
+    return labels
+
 
 
 if __name__ == "__main__":
@@ -336,5 +443,7 @@ if __name__ == "__main__":
     #input_test()
     #visual_instance(filename)
     #matrix_reorder(filename)
-    load_labels()
+    #load_labels()
+    #test()
+    our_label_stat()
     print("haha")

@@ -282,18 +282,16 @@ class ArgumentDataset(Dataset):
         self.label_type = args.loss_type
         self.transform = transform
         self.all_coordinates = []
-        self.label_map = {'eax': 0,
-                          'eax.restart': 1,
-                          'lkh': 2,
-                          'lkh.restart': 3,
-                          'maos': 4}
+        self.label_map = {'GA-EAX': 0,
+                          'GA-EAX-restart': 1,
+                          'LKH': 2,
+                          'LKH-restart': 3,
+                          'LKH-crossover': 4,
+                          'MAOS': 5}
         for key in labels.keys():
-            dataset = key.strip().split('_')[0]
-            instance_id = key.strip().split('_')[1]
-            if dataset == 'morphed':
-                node_num = instance_id.strip().split('-')[0]
-                tmp1, tmp2 = instance_id.strip().split('---')[0], instance_id.strip().split('---')[1]
-                instance_id = node_num + "---" + tmp1 + '.tsp---' + tmp2 + '.tsp'
+            dataset = key.strip().split('/')[2]
+            instance_id = key.strip().split('/')[3]
+
             full_instance_dir = os.path.join(path, dataset, instance_id) + '.coo.pickle'
             with open(full_instance_dir, 'rb') as in_file:
                 data = pickle.load(in_file)
@@ -324,8 +322,8 @@ class ArgumentDataset(Dataset):
             label = torch.FloatTensor(label)
 
         # generate the weights
-        weights = self.run_time_normalize(run_time)
-        weights = torch.FloatTensor(weights)
+        weights = self.to_weights_tensor(run_time)
+
 
         # generate the image
         image = self.transform(x)
@@ -333,7 +331,7 @@ class ArgumentDataset(Dataset):
         image = image.repeat(1, 3)
         image = image.view((3, image.shape[0], image.shape[0]))
 
-        return image, label, run_time, run_time
+        return image, label, weights, run_time
 
 
     def __len__(self):
@@ -341,8 +339,8 @@ class ArgumentDataset(Dataset):
 
     def to_time_tensor(self, algorithm_to_median):
         run_time = np.zeros(shape=(len(self.label_map)), dtype=np.float)
-        for key, value in algorithm_to_median.items():
-            run_time[self.label_map[key]] = value
+        for algorithm, value in algorithm_to_median.items():
+            run_time[self.label_map[algorithm]] = value
         return run_time
 
     def to_sce_label_tensor(self, run_time, exp = 2.0):
@@ -355,8 +353,9 @@ class ArgumentDataset(Dataset):
         mask = np.where(run_time > baseline, 0, 1)
         label = 1.0 / np.power(run_time, exp)
         label = np.multiply(label, mask)
+        # normalize to probability
         label = label / np.sum(label)
-        #print("label: {}".format(label))
+
         return label
 
 
@@ -385,3 +384,7 @@ class ArgumentDataset(Dataset):
         min_time, max_time = np.min(run_time), np.max(run_time)
         res = run_time - min_time / (max_time - min_time)
         return res
+
+    def to_weights_tensor(self, run_time, exp = 0.9):
+        weights = np.power(run_time, exp)
+        return weights

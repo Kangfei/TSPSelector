@@ -65,6 +65,13 @@ class WeightedMeanSquareError(Module):
         return
 
     def forward(self, inputs, target, weights = None):
+        """
+        :param inputs: predictions: N * C
+        :param target: target labels: N * C
+        :param weights: weight: N * C
+        :return: loss
+        """
+        #inputs = F.sigmoid(inputs) # map to [0, 1]
         loss = self.mse(inputs, target)
         sample_num, class_num = target.shape
         if weights is not None:
@@ -75,7 +82,7 @@ class WeightedMeanSquareError(Module):
 
 class WeightedNLLLoss(Module):
     """
-    Hard Label Cross Entropy Loss
+    Hard Label Cross Entropy Loss (NLL Loss)
     """
     def __init__(self):
         super(WeightedNLLLoss, self).__init__()

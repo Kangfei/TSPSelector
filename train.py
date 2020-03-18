@@ -5,27 +5,28 @@ import pickle
 import random
 import numpy as np
 import math
+import csv
+import statistics as stat
 from InstanceLoader import *
 from transform import  *
 from torch.utils.data import DataLoader
 import torch.optim as optim
-from cnn import SimpleCNN, softCrossEntropy, WeightedMultiLabelBinaryClassification, WeightedMeanSquareError, WeightedNLLLoss
 from cnn import select_model, select_criterion
 
 
-def process_one_instance(data):
+def process_one_our_instance(data, time_out = 900.0, num_runs = 30):
     instance_id = data[0][0]
-    dataset = instance_id.split('_')[0].strip()
+
     """
     if dataset == 'rue':
         return None, None, None
     """
-    best_runtime = 36000
+    best_runtime = time_out
     best_algorithm = 'all'
     algorithm_to_result = {}
-    for i in range(50):
-        ins_id, repeat, algorithm, runtime, runstatus = \
-        data[i][0], data[i][1], data[i][2], data[i][3], data[4]
+    for i in range(num_runs):
+        ins_id, algorithm, repeat, runstatus, runtime = \
+        data[i][0], data[i][1], data[i][2], data[i][3], float(data[i][4])
         if ins_id != instance_id:
             return None, None, None
         if algorithm not in algorithm_to_result.keys():
@@ -35,36 +36,70 @@ def process_one_instance(data):
 
     algorithm_to_median = {} # algorithm-> median runtime
     for key, value in algorithm_to_result.items():
-        value.sort()
-        algorithm_to_median[key] = (value[4] + value[5]) / 2.0
-        if value[5] < 3600:
-            if (value[4] + value[5]) / 2.0 < best_runtime:
-                best_runtime = (value[4] + value[5]) / 2.0 # median of the test performance
+        median = stat.median(value)
+        algorithm_to_median[key] = median
+        if median < time_out:
+            if median < best_runtime:
+                best_runtime = median # median of the test performance
                 best_algorithm = key
         else:
-            algorithm_to_median[key] = 36000.0
+            algorithm_to_median[key] = time_out * 10
     return instance_id, best_algorithm, algorithm_to_median
 
-def load_labels(filename = '/home/kfzhao/data/ECJ_instances/algorithm_runs.arff.txt'):
-
-    file = open(filename, 'r')
+def load_labels(filename = '/home/kfzhao/data/our_instances/algorithm_runs.csv', time_out = 900.0, num_runs = 30):
     data = []
     labels = {}
-    for line in file:
-        if line.strip().startswith('@') or line.strip() == '':
+    with open(filename, 'r') as label_file:
+        csvreader = csv.reader(label_file)
+        next(csvreader)
+        for _ in range(0 * num_runs):
+            next(csvreader)
+
+        for line in csvreader:
+            data.append(line)
+    label_file.close()
+    num_instances = 0
+    best_algo_cnt = {} # algo-> best instance count
+    timeout_algo_cnt = {} # algo-> timeout instance count
+    single_run_time = {} # algo-> average run time
+    num_timeout = 0
+    best_run_time = 0
+    for i in range(3000):
+        instance_id, best_algorithm, algorithm_to_median = \
+            process_one_our_instance(data[i * num_runs: i * num_runs + num_runs], time_out, num_runs)
+        if instance_id is None:
             continue
-        line = line.strip().split(',')
-        ins_id, repeat, algorithm, runtime, runstatus = \
-        str(line[0]), int(line[1]), str(line[2]), float(line[3]), str(line[4])
-        data.append((ins_id, repeat, algorithm, runtime, runstatus))
-    file.close()
-    for i in range(int(len(data) / 50)):
-        instance_id, best_algorithm, algorithm_to_median = process_one_instance(data[i * 50: i * 50 + 50])
-        #print(instance_id, best_algorithm)
-        if instance_id is not None:
-            labels[instance_id] = (best_algorithm, algorithm_to_median)
-    #print("num of record:", len(data))
-    #print("num of labels:", len(labels))
+        num_instances += 1
+        if best_algorithm not in best_algo_cnt.keys():
+            best_algo_cnt[best_algorithm] = 0
+        best_algo_cnt[best_algorithm] += 1
+        best_run_time += algorithm_to_median[best_algorithm]
+        if algorithm_to_median[best_algorithm] >= time_out:
+            num_timeout += 1
+
+        for algorithm, runtime in algorithm_to_median.items():
+            if algorithm not in single_run_time.keys():
+                single_run_time[algorithm] = 0.0
+            single_run_time[algorithm] += runtime
+            if algorithm not in timeout_algo_cnt.keys():
+                timeout_algo_cnt[algorithm] = 0
+            if runtime >= time_out:
+                timeout_algo_cnt[algorithm] += 1
+        # save the label
+        instance_id = os.path.splitext(instance_id)[0] # remove the extent '.tsp'
+        labels[instance_id] = (best_algorithm, algorithm_to_median)
+    """
+    for algorithm, cnt in best_algo_cnt.items():
+        print("{} best instance number : {}".format(algorithm, cnt))
+
+    for algorithm, cnt in timeout_algo_cnt.items():
+        print("{} timeout instance number : {}".format(algorithm, cnt))
+
+    print("average best run time={}".format(best_run_time / num_instances))
+    for algorithm, runtime in single_run_time.items():
+        print("{} average runtime : {}".format(algorithm, runtime / num_instances))
+    print("# virtual best solver timeout {}".format(num_timeout))
+    """
     return labels
 
 def validate(args, model, dataloader):
@@ -115,22 +150,26 @@ def cnn_validate(args, model, dataloader):
             data, label = data.cuda(), label.cuda()
 
         outputs = model(data)
-        if loss_type == 'sce' or loss_type == 'nll':
+
+        if loss_type == 'nll':
             outputs = torch.nn.functional.log_softmax(outputs, dim=1)
+            outputs = outputs.squeeze()
+            idx = torch.argmax(outputs, dim=1)
+        elif loss_type == 'sce':
+            outputs = torch.nn.functional.log_softmax(outputs, dim=1)
+            idx = torch.argmax(outputs, dim=1)
+            label = torch.argmax(label, dim=1)
         elif loss_type == 'bce':
             outputs = torch.nn.functional.sigmoid(outputs)
-        outputs = outputs.squeeze()
-
-        if loss_type == 'mse':
-            idx = torch.argmin(outputs, dim = 1)  # for mse loss
-        else :
-            idx = torch.argmax(outputs, dim = 1)
-        if loss_type == 'sce' or loss_type == 'bce':
-            label = torch.argmax(label, dim = 1)
+            idx = torch.argmax(outputs, dim=1)
+            label = torch.argmax(label, dim=1)
         elif loss_type == 'mse':
+            #outputs = torch.nn.functional.sigmoid(outputs)
+            idx = torch.argmin(outputs, dim=1)
             label = torch.argmin(label, dim=1)
 
-        #label = torch.argmax(label, dim = 1) # for soft cross entory, bce and mse
+
+        #label = torch.argmax(label, dim = 1) # for soft cross entory, bce
         #idx = torch.argmin(outputs, dim = 1) # for mse loss
         #label = torch.argmin(label, dim = 1)
         #idx = torch.argmax(outputs, dim=1) # for nll loss
@@ -201,7 +240,7 @@ def cnn_train(args, model, train_dataloader, val_dataloader, optimizer, criterio
     for epoch in range(args.epoches):
         total_loss = 0.0
         model.train()
-        for i, (data, label, weights, run_time) in enumerate(train_dataloader):
+        for i, (data, label, weights, _) in enumerate(train_dataloader):
             if args.cuda:
                 data, label, weights = data.cuda(), label.cuda(), weights.cuda()
 
@@ -326,7 +365,7 @@ def main_cnn(args, train_dataset, val_dataset):
 def cross_validation(args, num_fold = 5):
 
     instances_path = args.instances_path
-    label_path = os.path.join(instances_path, 'algorithm_runs.arff.txt')
+    label_path = os.path.join(instances_path, 'algorithm_runs.csv')
     labels = load_labels(label_path)
 
     # split the dataset
@@ -399,14 +438,15 @@ if __name__ == "__main__":
                         help="reduce the image resolution by scale_factor")
     parser.add_argument("--flip", default=True, type=bool)
     # Model Settings (ONLY FOR CNN)
-    parser.add_argument("--model_type", type=str, default='resnet18')
-    parser.add_argument("--loss_type", type=str, default='nll')
+    parser.add_argument("--model_type", type=str, default='resnet34')
+    # loss type: nll, sce, bce, mse
+    parser.add_argument("--loss_type", type=str, default='sce')
     # Training settings
-    parser.add_argument("--num_classes", default=5, type=int,
+    parser.add_argument("--num_classes", default=6, type=int,
                         help="number of classes")
     parser.add_argument("--num_fold", default=5, type=int,
                         help="number of fold for cross validation")
-    parser.add_argument("--epoches", default=5, type=int)
+    parser.add_argument("--epoches", default=10, type=int)
     parser.add_argument("--batch_size", default= 16, type=int)
     parser.add_argument("--learning_rate", default= 2e-4, type=float)
     parser.add_argument('--weight_decay', type=float, default=1e-3,
@@ -422,7 +462,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type = int, default= 16,
                         help='number of workers for Dataset.')
     # Other
-    parser.add_argument("--instances_path", type=str, default="/home/kfzhao/data/ECJ_instances_coo")
+    parser.add_argument("--instances_path", type=str, default="/home/kfzhao/data/our_instances")
     parser.add_argument("--verbose", default=True, type=bool)
     args = parser.parse_args()
     if args.verbose:
